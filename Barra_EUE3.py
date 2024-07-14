@@ -187,7 +187,7 @@ def style_factor_norm(factors, capital):
 
 
 class CrossSection():
-    def __init__(self, data, robust_ret=None, specific_ret = None ):
+    def __init__(self, data, robust_ret=None, jump = None ):
         #print("Initializing CrossSection...")
         #print("Data Columns:", data.columns)
         
@@ -197,7 +197,8 @@ class CrossSection():
         self.capital = data['capital'].values
         self.ret = data['ret'].values
         self.robust_ret =  robust_ret
-        self.specific_ret = specific_ret
+        self.specific_ret = None
+        self.jump = jump
         
         style_factor_columns = ['Size', 'Liquidity', 'Momentum', 'Volatility', 'Value', 'Earning', 'Dividend', 'Leverage', 'Growth']
         industry_factor_columns = ['M1100', 'M1200', 'M1300', 'M1400', 'M1500', 'M1600', 'M1721', 'M1722', 'M1800', 'M1900', 'M2000', 'M2100', 'M2200',
@@ -214,9 +215,9 @@ class CrossSection():
         self.style_factors_names = style_factor_columns
         self.industry_factors_names = industry_factor_columns
         self.country_factors = np.array(self.N * [[1]])
-        
-        #self.W = np.sqrt(self.capital) / sum(np.sqrt(self.capital))
-        self.W = np.clip(np.sqrt(self.capital) / sum(np.sqrt(self.capital)), None, np.quantile(np.sqrt(self.capital) / sum(np.sqrt(self.capital)), 0.95))
+        self.cap_w = (self.capital) / sum((self.capital))
+        self.W = np.sqrt(self.capital) / sum(np.sqrt(self.capital))
+        #self.W = np.clip(np.sqrt(self.capital) / sum(np.sqrt(self.capital)), None, np.quantile(np.sqrt(self.capital) / sum(np.sqrt(self.capital)), 0.95))
         
         #print(f'Cross Section Regression, Date: {self.date}, {self.N} Stocks, {self.P} Industry Factors, {self.Q} Style Factors')
 
@@ -226,7 +227,8 @@ class CrossSection():
         多因子模型求解
         '''
         
-        W = np.diag(self.W)
+        #W = np.diag(self.W)
+        W = np.diag(self.cap_w)
         
         if self.P>0:
             #各个行业的总市值
@@ -264,11 +266,12 @@ class CrossSection():
         else:
             #求解多因子模型
             factors = np.matrix(np.hstack([self.country_factors, self.style_factors]))
+            
             pure_factor_portfolio_weight = np.linalg.inv(factors.T @ W @ factors) @ factors.T @ W    #純因子組合權重
 
         
         factor_ret = pure_factor_portfolio_weight @ self.ret                        #純因子收益
-    
+        
         factor_ret = np.array(factor_ret)[0]
         
         pure_factor_portfolio_exposure = pure_factor_portfolio_weight @ factors     #纯因子组合在各个因子上的暴露
@@ -283,8 +286,10 @@ class CrossSection():
         多因子模型求解
         '''
         
-        W = np.diag(self.W)
+        #W = np.diag(self.W)
+        W = np.diag(self.cap_w)
         
+    
         if self.P>0:
             #各个行业的总市值
             industry_capital = np.array([sum(self.industry_factors[:,i] * self.capital) for i in range(self.P)])
@@ -321,20 +326,35 @@ class CrossSection():
         else:
             #求解多因子模型
             factors = np.matrix(np.hstack([self.country_factors, self.style_factors]))
+            #factors = np.matrix(np.hstack([self.country_factors, self.industry_factors, self.style_factors]))
             pure_factor_portfolio_weight = np.linalg.inv(factors.T @ W @ factors) @ factors.T @ W    #純因子組合權重
         
-        #print(type(self.robust_ret))
+        
         factor_ret = pure_factor_portfolio_weight @ self.robust_ret                        #純因子收益
         
         factor_ret = np.array(factor_ret)[0]
+        #print(type(factor_ret))
         #print('ok')
         pure_factor_portfolio_exposure = pure_factor_portfolio_weight @ factors     #纯因子组合在各个因子上的暴露
         
+        part_specific_ret = self.ret - np.array(factors @ factor_ret.T)[0]
+        # self.jump + 
+        specific_ret = part_specific_ret
+
+        #print(self.jump)
+        #print('\n ---------------------------------------------------------------------')
+        #print(part_specific_ret)
+        #print('\n =====================================================================')
+        #specific_ret = self.specific_ret
         #specific_ret = self.ret - np.array(factors @ factor_ret.T)[0]               #個股特異收益率 (Un)
-        R2 = 1 - np.var(self.specific_ret) / np.var(self.ret)                            #R square
+        #specific_ret = specific_ret.tolist()
+        R2 = 1 - (self.cap_w * specific_ret * specific_ret).sum() / (self.cap_w * self.ret *  self.ret).sum()                          #R square
+        #R2 = 1 - np.var(specific_ret) / np.var(self.ret)
+        
+        #specific_ret = specific_ret.tolist()
         #print('alright')
         #return((factor_ret, specific_ret, pure_factor_portfolio_exposure, R2))
-        return((factor_ret,  pure_factor_portfolio_exposure, R2))
+        return((factor_ret,  pure_factor_portfolio_exposure, R2, specific_ret))
     
 '''
 class MFM():
@@ -374,6 +394,7 @@ class MFM():
         self.columns.extend(['M1100', 'M1200', 'M1300', 'M1400', 'M1500', 'M1600', 'M1721', 'M1722', 'M1800', 'M1900', 'M2000', 'M2100', 'M2200',
                              'M2324', 'M2325', 'M2326', 'M2327', 'M2328', 'M2329', 'M2330', 'M2331', 'M2500', 'M2600', 'M2700', 'M2900', 'M3500',
                              'M3600', 'M3700', 'M3800', 'M9700', 'M9900'])
+        #self.columns.extend(['excess_ret'])
         
         self.last_capital = None                                             #最后一期的市值 
         self.factor_ret = None                                               #因子收益
@@ -450,6 +471,7 @@ class MFM():
         #print(ret_wide)
         
         return_jump_df = pd.DataFrame(index=ret_wide.index, columns=ret_wide.columns)
+        jump = []
         print('===================================正在計算Jump===================================')
         for t in tqdm(range(self.T), desc='計算Jump'):
             period_residual = self.Un.loc[self.sorted_dates[t]]
@@ -460,11 +482,17 @@ class MFM():
                                    0)
             #print(type(ret))
             #print(type(return_jump))
+             
             return_jump_df.loc[self.sorted_dates[t], Un.columns] = ret.values - return_jump
+            return_jump = return_jump.flatten()
+            jump.append(pd.DataFrame([return_jump], columns = cs.stocknames, index = [self.sorted_dates[t]])) 
+            #jump.append(pd.DataFrame([return_jump], columns = cs.stocknames, index = [self.sorted_dates[t]])) 
         #print("出jump迴圈")
         #print(return_jump_df)
         robust_ret_df = return_jump_df
         
+        self.jump = jump
+        #print(jump)
         
         # 將 robust_ret_df 轉換成長資料格式
         robust_ret_long = robust_ret_df.reset_index().melt(id_vars=['date'], var_name='stocknames', value_name='robust_ret')
@@ -489,16 +517,19 @@ class MFM():
             data_by_time = self.data.iloc[self.dates == self.sorted_dates[t],:]
             data_by_time = data_by_time.sort_values(by = 'stocknames')
             
-            cs = CrossSection(data_by_time, robust_ret=data_by_time['robust_ret'].values, specific_ret = self.specific_ret )
-            factor_ret_t, _ , R2_t = cs.reg2()
+            jump_df = self.jump[t]  # 从self.jump列表中获取第t个DataFrame
+            jump_list = jump_df.values.flatten()  # df to numpy.ndarray
+            
+            cs = CrossSection(data_by_time, robust_ret=data_by_time['robust_ret'].values, jump = jump_list )
+            factor_ret_t, _ , R2_t, specific_ret_t = cs.reg2()
             
             factor_ret.append(factor_ret_t)
             #注意：每个截面上股票池可能不同
-            #specific_ret.append(pd.DataFrame([specific_ret_t], columns = cs.stocknames, index = [self.sorted_dates[t]]))
+            specific_ret.append(pd.DataFrame([specific_ret_t], columns = cs.stocknames, index = [self.sorted_dates[t]]))
             #specific_ret_list.append(pd.DataFrame(specific_ret_t, index=cs.stocknames, columns=[self.sorted_dates[t]]).T) #*****************
             R2.append(R2_t)
             self.last_capital = cs.capital
-            
+        
         factor_ret = pd.DataFrame(factor_ret, columns = self.columns, index = self.sorted_dates)
         R2 = pd.DataFrame(R2, columns = ['R2'], index = self.sorted_dates)
         #Un = pd.concat(specific_ret_list).sort_index()               #***************************************
@@ -611,7 +642,7 @@ class MFM():
 
 
 #%%
-data = pd.read_csv('C:\\Users\\385225\\Documents\\GitHub\\Barra\\data\\cleaned_data.csv')
+data = pd.read_csv('C:\\Users\\385225\\Documents\\GitHub\\Barra\\data\\cleaned_data2.csv')
 orgdata = data
 # 篩選出2018年5月15日之後的所有行
 data = data[data['date'] >= '2018-05-15']
@@ -619,9 +650,16 @@ data1 = data[data['date'] >= '2023-12-01']
 #print("Data Columns:", data.columns)
 #%%
 
-model = MFM(data1, 9, 31)
+model = MFM(data, 9, 31)
 (factor_ret, specific_ret, R2, Un) = model.reg_by_time()
 
+R2 = R2[R2<1]
+plt.figure(figsize=(20,12))
+plt.plot(R2.rolling(window=250).mean(), label= 'Cap Weights')
+
+plt.legend()
+plt.grid(True)
+plt.show()
 
 #%%
 
@@ -639,15 +677,9 @@ model.factor_ret.to_csv('factor_ret.csv')
 
 #%%
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
 
 
-plt.figure(figsize=(20,12))
-plt.plot(R2.rolling(window=250).mean(), label= 'Cap Weights')
-
-plt.legend()
-plt.grid(True)
-plt.show()
 
 
