@@ -18,7 +18,16 @@ import math
 
 
 
-def Newey_West(ret, q = 2, tao = 252):
+    
+#    計算Newey-West調整過的協方差矩陣
+#    ret: DataFrame, 行為時間，列為因子收益
+#    q: 假設因子收益為q階MA過程
+#    tao: 算協方差時的半衰期
+#    h: 樣本時間長度
+#    D: 協方差計算時的最大滯後時間長度
+
+
+def Newey_West(ret, q = 2, tao = 90, h = 252):
     '''
     Newey_West方差調整
     時序上存在相關性時，使用Newey_West調整協方差估計
@@ -42,20 +51,57 @@ def Newey_West(ret, q = 2, tao = 252):
     ret = ret - w_stats.mean
     
     ret = np.matrix(ret.values)
-    Gamma0 = [weights[t] * ret[t].T  @ ret[t] for t in range(T)]
+    Gamma0 = [weights[t] * ret[t].T  @ ret[t] for t in range(max(T - h, 0), T)]
     Gamma0 = reduce(np.add, Gamma0)
     
     
     V = Gamma0             #调整后的协方差矩阵
     for i in range(1,q+1):
-        Gammai = [weights[i+t] * ret[t].T  @ ret[i+t] for t in range(T-i)]
+        Gammai = [weights[i+t] * ret[t].T  @ ret[i+t] for t in range(max(T - h, 0), T - i)]
         Gammai = reduce(np.add, Gammai)
-        V = V + (1 - i/(1+q)) * (Gammai + Gammai.T)
-    
+        V += (1 - i/(1+q)) * (Gammai + Gammai.T)
+    V * 22
     return(pd.DataFrame(V, columns = names, index = names))
-    
-    
-    
+
+"""
+def Newey_West(ret, q = 2, tao = 252):
+        '''
+        Newey_West方差調整
+        時序上存在相關性時，使用Newey_West調整協方差估計
+        factor_ret: DataFrame, 行為時間，列為因子收益
+        q: 假設因子收益為q階MA過程
+        tao: 算協方差時的半衰期
+        '''
+        from functools import reduce
+        from statsmodels.stats.weightstats import DescrStatsW 
+        
+        T = ret.shape[0]           #时序长度
+        K = ret.shape[1]           #因子数
+        if T <= q or T <= K:
+            raise Exception("T <= q or T <= K")
+             
+        names = ret.columns    
+        weights = 0.5**(np.arange(T-1,-1,-1)/tao)   #指数衰减权重
+        weights = weights / sum(weights)
+        
+        w_stats = DescrStatsW(ret, weights)
+        ret = ret - w_stats.mean
+        
+        ret = np.matrix(ret.values)
+        Gamma0 = [weights[t] * ret[t].T  @ ret[t] for t in range(T)]
+        Gamma0 = reduce(np.add, Gamma0)
+        
+        
+        V = Gamma0             #调整后的协方差矩阵
+        for i in range(1,q+1):
+            Gammai = [weights[i+t] * ret[t].T  @ ret[i+t] for t in range(T-i)]
+            Gammai = reduce(np.add, Gammai)
+            V = V + (1 - i/(1+q)) * (Gammai + Gammai.T)
+        
+        return(pd.DataFrame(V, columns = names, index = names))
+
+
+"""
 
 def eigen_risk_adj(covmat, T = 1000, M = 100, scale_coef = 1.4):
     '''
@@ -543,11 +589,10 @@ class MFM():
         return((factor_ret, specific_ret, R2, Un))
 
 
- #   def Jumps_adjust(self):
-        
 
+     
 
-    def Newey_West_by_time(self, q = 2, tao = 252):
+    def Newey_West_by_time(self, q = 2, tao = 90, h = 252):
         '''
         逐時計算斜方差並且進行Newey West調整
         q: 假设因子收益為q皆MA過程
@@ -561,7 +606,7 @@ class MFM():
         print('\n\n===================================逐時Newey West調整=================================')    
         for t in range(1,self.T+1):
             try:
-                Newey_West_cov.append(Newey_West(self.factor_ret[:t], q, tao))
+                Newey_West_cov.append(Newey_West(self.factor_ret[:t], q, tao, h))
             except:
                 Newey_West_cov.append(pd.DataFrame())
             
@@ -569,7 +614,8 @@ class MFM():
         
         self.Newey_West_cov = Newey_West_cov
         return(Newey_West_cov)
-    
+
+
     
     
     def eigen_risk_adj_by_time(self, M = 100, scale_coef = 1.4):
@@ -652,7 +698,7 @@ data1 = data[data['date'] >= '2023-12-01']
 
 model = MFM(data, 9, 31)
 (factor_ret, specific_ret, R2, Un) = model.reg_by_time()
-
+#%%
 R2 = R2[R2<1]
 plt.figure(figsize=(20,12))
 plt.plot(R2.rolling(window=250).mean(), label= 'Cap Weights')
@@ -663,7 +709,35 @@ plt.show()
 
 #%%
 
-nw_cov_ls = model.Newey_West_by_time(q = 2, tao = 252)                 #Newey_West调整
+nw_cov_ls = model.Newey_West_by_time(q = 15, tao = 90, h = 252)                 #Newey_West调整
+
+#%%
+
+nw_cov_cd = model.cd_by_time(q=5, tao=90, h=90)
+
+
+#%%
+
+nw_cov_cm = model.Newey_West_cm_by_time( q=2, tao=90, h=252, D=15)
+
+#%%
+
+def check_semidefinite_matrices(cov_matrixs):
+    semidefinite_results = {}
+    for i, cov_matrix in enumerate(cov_matrixs):
+        # 計算特徵值
+        eigenvalues = np.linalg.eigvals(cov_matrix)
+        # 檢查所有特徵值是否非負
+        is_semidefinite = np.all(eigenvalues >= 0)
+        semidefinite_results[i] = is_semidefinite
+        
+    if all(semidefinite_results.values()):
+        print('該矩陣皆正定')
+    else:
+        print('有矩陣非正定')
+    return semidefinite_results
+
+nw_cov_check = check_semidefinite_matrices(nw_cov_ls)
 
 #%%
 
@@ -677,9 +751,71 @@ model.factor_ret.to_csv('factor_ret.csv')
 
 #%%
 
-#import matplotlib.pyplot as plt
+factor_value_df = factor_ret.add(1).cumprod().dropna(axis=0)
+
+plt.figure(figsize=(20, 12))
+plt.plot(factor_value_df) #21, 9
+plt.title('Net Value of Factors')
+plt.ylabel('Net Value')
+plt.xlabel('Time')
+plt.legend(factor_value_df.columns)
+#plt.yticks(range(20))
+# plt.ylim(0, 3)
+plt.show()
+
+#%%
+'''
+import yfinance as yf
+
+P0050 = yf.download('0050.TW', start = factor_value_df.index[0], end= factor_value_df.index[-1])['Adj Close'].pct_change().fillna(0).add(1).cumprod()
+PTWII = yf.download('^TWII', start = factor_value_df.index[0], end= factor_value_df.index[-1])['Adj Close'].pct_change().fillna(0).add(1).cumprod()
+
+plt.figure(figsize=(20, 12))
+plt.plot(factor_value_df.iloc[:,0], label = 'Barra')
+plt.plot(P0050, label =  '0050')
+plt.plot(PTWII, label =  'TWII - PriceIndex')
+plt.title('Net Value of Factors')
+plt.ylabel('Net Value')
+plt.xlabel('Time')
+plt.yscale('log')
+plt.legend()
+plt.show()
+
+value_holding = factor_value_df.iloc[-1,:].sort_values()
 
 
 
+
+#%%
+
+
+factor_returns = factor_ret.iloc[:,-9:].dropna(axis=0)#.drop(columns = ['Volatility'])
+
+portfolio_returns = pd.Series(index = factor_returns.index)
+for index, date in enumerate(factor_returns.index):
+    if index == len(factor_returns.index)-1:
+        continue
+    factor_daily_return = factor_returns.loc[date].sort_values(ascending=False)
+    daily_long_factor = factor_daily_return.index[0]
+    daily_short_factor = factor_daily_return.index[-1]
+    portfolio_daily_return = factor_returns.iloc[index+1][daily_long_factor] - factor_returns.iloc[index+1][daily_short_factor]
+    portfolio_returns.loc[date] = portfolio_daily_return
+
+portfolio_value = portfolio_returns.add(1).cumprod()
+
+plt.figure(figsize=(20, 12))
+#plt.plot(factor_value_df['DSTD_65_23'], label = 'DSTD_65_23')
+#plt.plot(factor_value_df['CMRA_12_0'], label = 'CMRA_12_0')
+# plt.plot(factor_value_df.iloc[:,-21:].drop(columns = ['DSTD_65_23']), label = factor_value_df.iloc[:,-21:].drop(columns = ['DSTD_65_23']).columns)
+plt.plot(portfolio_value, label = 'Factor Momentum')
+plt.title('Net Value of Factors')
+plt.ylabel('Net Value')
+plt.xlabel('Time')
+plt.legend()
+plt.yscale('log')
+# plt.legend(factor_value_df.iloc[:,-9:].columns)
+plt.show()
+
+'''
 
 
